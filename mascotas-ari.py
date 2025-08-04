@@ -1,6 +1,5 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, font as tkfont, filedialog
-import sqlite3
 import json
 import hashlib
 import random
@@ -11,6 +10,8 @@ import threading
 import os
 from dataclasses import dataclass
 from typing import List, Dict, Optional
+import mysql.connector
+from mysql.connector import Error
 
 @dataclass
 class Product:
@@ -23,6 +24,9 @@ class Product:
     stock: int
     image_path: str = None
     discount: float = 0.0
+    marca: str = None
+    tipo_mascota: str = None
+    edad_mascota: str = None
 
 @dataclass
 class User:
@@ -32,336 +36,370 @@ class User:
     password_hash: str
     created_at: str
     is_premium: bool = False
+    nombre: str = None
+    apellido: str = None
+    telefono: str = None
+    direccion: str = None
+    ciudad: str = None
+    codigo_postal: str = None
 
 class DatabaseManager:
-    def __init__(self, db_path="petzone.db"):
-        self.db_path = db_path
-        self.init_database()
+    def __init__(self):
+        self.connection = None
+        self.connect()
+        
+    def connect(self):
+        try:
+            self.connection = mysql.connector.connect(
+                host='localhost',
+                user='root',  # Cambia por tu usuario de MySQL
+                password='',  # Cambia por tu contraseña de MySQL
+                database='petZone'
+            )
+            if self.connection.is_connected():
+                print("Conexión a MySQL establecida")
+        except Error as e:
+            print(f"Error al conectar a MySQL: {e}")
+            messagebox.showerror("Error de Base de Datos", f"No se pudo conectar a la base de datos: {e}")
+    
+    def reconnect(self):
+        if not self.connection or not self.connection.is_connected():
+            self.connect()
+    
+    def execute_query(self, query, params=None, fetch_one=False, fetch_all=False, commit=False):
+        cursor = None
+        try:
+            self.reconnect()
+            cursor = self.connection.cursor(dictionary=True)
+            cursor.execute(query, params or ())
+            
+            if commit:
+                self.connection.commit()
+            
+            if fetch_one:
+                return cursor.fetchone()
+            elif fetch_all:
+                return cursor.fetchall()
+            
+            return True
+        except Error as e:
+            print(f"Error en la consulta: {e}")
+            if self.connection:
+                self.connection.rollback()
+            return None
+        finally:
+            if cursor:
+                cursor.close()
+    
+    def hash_password(self, password: str) -> str:
+        return hashlib.sha256(password.encode()).hexdigest()
 
-    def init_database(self):
-        """Inicializa la base de datos con las tablas necesarias"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Tabla de usuarios
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                email TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                is_premium BOOLEAN DEFAULT FALSE,
-                profile_image TEXT,
-                phone TEXT,
-                address TEXT
-            )
-        ''')
-        
-        # Tabla de productos
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS products (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                price REAL NOT NULL,
-                category TEXT NOT NULL,
-                rating REAL DEFAULT 0.0,
-                description TEXT,
-                stock INTEGER DEFAULT 0,
-                image_path TEXT,
-                discount REAL DEFAULT 0.0,
-                created_at TEXT NOT NULL
-            )
-        ''')
-        
-        # Tabla de pedidos
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS orders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                total REAL NOT NULL,
-                status TEXT DEFAULT 'pending',
-                created_at TEXT NOT NULL,
-                shipping_address TEXT,
-                FOREIGN KEY (user_id) REFERENCES users (id)
-            )
-        ''')
-        
-        # Tabla de items de pedidos
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS order_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_id INTEGER,
-                product_id INTEGER,
-                quantity INTEGER NOT NULL,
-                price REAL NOT NULL,
-                FOREIGN KEY (order_id) REFERENCES orders (id),
-                FOREIGN KEY (product_id) REFERENCES products (id)
-            )
-        ''')
-        
-        # Tabla de favoritos
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS favorites (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                product_id INTEGER,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users (id),
-                FOREIGN KEY (product_id) REFERENCES products (id),
-                UNIQUE(user_id, product_id)
-            )
-        ''')
-        
-        # Tabla de reseñas
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS reviews (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                product_id INTEGER,
-                rating INTEGER NOT NULL,
-                comment TEXT,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users (id),
-                FOREIGN KEY (product_id) REFERENCES products (id)
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
-        
-        # Insertar datos de ejemplo si no existen
-        self.insert_sample_data()
-
-    def insert_sample_data(self):
-        """Inserta datos de ejemplo si la base de datos está vacía"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
+    def init_sample_data(self):
+        """Inicializa datos de ejemplo si la base de datos está vacía"""
         # Verificar si ya hay productos
-        cursor.execute("SELECT COUNT(*) FROM products")
-        if cursor.fetchone()[0] == 0:
+        query = "SELECT COUNT(*) as count FROM productos"
+        result = self.execute_query(query, fetch_one=True)
+        
+        if result and result['count'] == 0:
+            # Insertar categorías primero si no existen
+            categories = ["Alimento Perros", "Juguetes", "Accesorios", "Higiene"]
+            for cat in categories:
+                self.execute_query(
+                    "INSERT INTO categorias (nombre) VALUES (%s) ON DUPLICATE KEY UPDATE nombre=nombre",
+                    (cat,),
+                    commit=True
+                )
+            
+            # Insertar productos de ejemplo
             sample_products = [
-                ("Comida Premium para Perros", 15990, "Alimentos", 4.5, "Alimento balanceado premium para perros adultos", 50, 0.10),
-                ("Juguete Interactivo para Gatos", 8500, "Juguetes", 4.2, "Juguete que estimula la mente de tu gato", 30, 0.15),
-                ("Correa Retráctil", 12750, "Accesorios", 4.0, "Correa retráctil de 5 metros para paseos seguros", 25, 0.0),
-                ("Cama Ortopédica", 24990, "Hogar", 4.8, "Cama ortopédica para el descanso óptimo", 15, 0.20),
-                ("Shampoo Hipoalergénico", 9990, "Higiene", 4.3, "Shampoo especial para pieles sensibles", 40, 0.0),
-                ("Rascador Torre", 18500, "Hogar", 4.6, "Torre rascadora de 1.5m con múltiples niveles", 20, 0.0),
-                ("Comedero Automático Smart", 32990, "Alimentación", 4.7, "Comedero programable con app móvil", 10, 0.25),
-                ("Kit de Juguetes Variados", 14500, "Juguetes", 4.4, "Set de 5 juguetes diferentes para entretenimiento", 35, 0.0)
+                ("Comida Premium para Perros", 15990, "Alimento Perros", 4.5, 
+                 "Alimento balanceado premium para perros adultos", 50, 0.10, "Royal Canin", "perro", "adulto"),
+                ("Juguete Interactivo para Gatos", 8500, "Juguetes", 4.2, 
+                 "Juguete que estimula la mente de tu gato", 30, 0.15, "Kong", "gato", "todas"),
+                ("Correa Retráctil", 12750, "Accesorios", 4.0, 
+                 "Correa retráctil de 5 metros para paseos seguros", 25, 0.0, "PetSafe", "perro", "todas"),
+                ("Cama Ortopédica", 24990, "Accesorios", 4.8, 
+                 "Cama ortopédica para el descanso óptimo", 15, 0.20, "OrthoPet", "perro", "senior"),
+                ("Shampoo Hipoalergénico", 9990, "Higiene", 4.3, 
+                 "Shampoo especial para pieles sensibles", 40, 0.0, "VetPlus", "todas", "todas"),
+                ("Rascador Torre", 18500, "Accesorios", 4.6, 
+                 "Torre rascadora de 1.5m con múltiples niveles", 20, 0.0, "CatFurniture", "gato", "todas"),
+                ("Comedero Automático Smart", 32990, "Accesorios", 4.7, 
+                 "Comedero programable con app móvil", 10, 0.25, "PetTech", "todas", "todas"),
+                ("Kit de Juguetes Variados", 14500, "Juguetes", 4.4, 
+                 "Set de 5 juguetes diferentes para entretenimiento", 35, 0.0, "PetFun", "todas", "todas")
             ]
             
             for product in sample_products:
-                cursor.execute('''
-                    INSERT INTO products (name, price, category, rating, description, stock, discount, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (*product, datetime.now().isoformat()))
-        
-        conn.commit()
-        conn.close()
+                query = """
+                INSERT INTO productos (nombre, precio, descripcion, stock, marca, tipo_mascota, edad_mascota, categoria_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 
+                    (SELECT id FROM categorias WHERE nombre = %s LIMIT 1))
+                """
+                params = (
+                    product[0], product[1], product[4], product[5], 
+                    product[7], product[8], product[9], product[2]
+                )
+                self.execute_query(query, params, commit=True)
 
-    def hash_password(self, password: str) -> str:
-        """Hashea una contraseña usando SHA-256"""
-        return hashlib.sha256(password.encode()).hexdigest()
-
-    def create_user(self, username: str, email: str, password: str) -> bool:
-        """Crea un nuevo usuario"""
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            password_hash = self.hash_password(password)
-            cursor.execute('''
-                INSERT INTO users (username, email, password_hash, created_at)
-                VALUES (?, ?, ?, ?)
-            ''', (username, email, password_hash, datetime.now().isoformat()))
-            
-            conn.commit()
-            conn.close()
-            return True
-        except sqlite3.IntegrityError:
-            return False
-
-    def authenticate_user(self, username: str, password: str) -> Optional[User]:
-        """Autentica un usuario"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
+    def create_user(self, username: str, email: str, password: str, nombre: str = None, apellido: str = None) -> bool:
+        """Crea un nuevo usuario en la base de datos"""
         password_hash = self.hash_password(password)
-        cursor.execute('''
-            SELECT id, username, email, password_hash, created_at, is_premium
-            FROM users WHERE username = ? AND password_hash = ?
-        ''', (username, password_hash))
         
-        result = cursor.fetchone()
-        conn.close()
+        # Verificar si el usuario o email ya existe
+        query = "SELECT id FROM usuarios WHERE email = %s"
+        result = self.execute_query(query, (email,), fetch_one=True)
         
         if result:
-            return User(*result)
+            return False
+        
+        # Crear nuevo usuario
+        query = """
+        INSERT INTO usuarios (username, email, password, nombre, apellido, fecha_registro)
+        VALUES (%s, %s, %s, %s, %s, NOW())
+        """
+        params = (username, email, password_hash, nombre or username, apellido or "")
+        result = self.execute_query(query, params, commit=True)
+        
+        return bool(result)
+
+    def authenticate_user(self, email: str, password: str) -> Optional[User]:
+        """Autentica un usuario"""
+        password_hash = self.hash_password(password)
+        
+        query = """
+        SELECT id, username, email, password as password_hash, 
+               fecha_registro as created_at, nombre, apellido, telefono, direccion, ciudad, codigo_postal
+        FROM usuarios 
+        WHERE email = %s AND password = %s
+        """
+        result = self.execute_query(query, (email, password_hash), fetch_one=True)
+        
+        if result:
+            return User(
+                id=result['id'],
+                username=result['username'],
+                email=result['email'],
+                password_hash=result['password_hash'],
+                created_at=str(result['created_at']),
+                nombre=result['nombre'],
+                apellido=result['apellido'],
+                telefono=result['telefono'],
+                direccion=result['direccion'],
+                ciudad=result['ciudad'],
+                codigo_postal=result['codigo_postal']
+            )
         return None
 
     def get_products(self, category: str = None, search: str = None) -> List[Product]:
         """Obtiene productos con filtros opcionales"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        query = "SELECT id, name, price, category, rating, description, stock, image_path, discount FROM products WHERE 1=1"
+        query = """
+        SELECT p.id, p.nombre as name, p.precio as price, c.nombre as category, 
+               p.descripcion as description, p.stock, p.marca, p.tipo_mascota, p.edad_mascota
+        FROM productos p
+        JOIN categorias c ON p.categoria_id = c.id
+        WHERE 1=1
+        """
         params = []
         
         if category and category != "Todos":
-            query += " AND category = ?"
+            query += " AND c.nombre = %s"
             params.append(category)
         
         if search:
-            query += " AND (name LIKE ? OR description LIKE ?)"
+            query += " AND (p.nombre LIKE %s OR p.descripcion LIKE %s)"
             params.extend([f"%{search}%", f"%{search}%"])
         
-        cursor.execute(query, params)
-        results = cursor.fetchall()
-        conn.close()
+        query += " ORDER BY p.nombre"
         
-        return [Product(*result) for result in results]
+        results = self.execute_query(query, params, fetch_all=True) or []
+        
+        products = []
+        for row in results:
+            # Obtener rating promedio si existe
+            rating_query = "SELECT AVG(rating) as avg_rating FROM reseñas WHERE producto_id = %s"
+            rating_result = self.execute_query(rating_query, (row['id'],), fetch_one=True)
+            avg_rating = rating_result['avg_rating'] if rating_result and rating_result['avg_rating'] else 4.0
+            
+            products.append(Product(
+                id=row['id'],
+                name=row['name'],
+                price=float(row['price']),
+                category=row['category'],
+                rating=float(avg_rating),
+                description=row['description'],
+                stock=row['stock'],
+                marca=row['marca'],
+                tipo_mascota=row['tipo_mascota'],
+                edad_mascota=row['edad_mascota']
+            ))
+        
+        return products
 
     def get_product_by_id(self, product_id: int) -> Optional[Product]:
         """Obtiene un producto por ID"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT id, name, price, category, rating, description, stock, image_path, discount
-            FROM products WHERE id = ?
-        ''', (product_id,))
-        
-        result = cursor.fetchone()
-        conn.close()
+        query = """
+        SELECT p.id, p.nombre as name, p.precio as price, c.nombre as category, 
+               p.descripcion as description, p.stock, p.marca, p.tipo_mascota, p.edad_mascota
+        FROM productos p
+        JOIN categorias c ON p.categoria_id = c.id
+        WHERE p.id = %s
+        """
+        result = self.execute_query(query, (product_id,), fetch_one=True)
         
         if result:
-            return Product(*result)
+            # Obtener rating promedio
+            rating_query = "SELECT AVG(rating) as avg_rating FROM reseñas WHERE producto_id = %s"
+            rating_result = self.execute_query(rating_query, (product_id,), fetch_one=True)
+            avg_rating = rating_result['avg_rating'] if rating_result and rating_result['avg_rating'] else 4.0
+            
+            return Product(
+                id=result['id'],
+                name=result['name'],
+                price=float(result['price']),
+                category=result['category'],
+                rating=float(avg_rating),
+                description=result['description'],
+                stock=result['stock'],
+                marca=result['marca'],
+                tipo_mascota=result['tipo_mascota'],
+                edad_mascota=result['edad_mascota']
+            )
         return None
 
     def create_order(self, user_id: int, items: List[Dict], total: float, shipping_address: str) -> int:
-        """Crea un nuevo pedido"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Crear pedido
-        cursor.execute('''
-            INSERT INTO orders (user_id, total, created_at, shipping_address)
-            VALUES (?, ?, ?, ?)
-        ''', (user_id, total, datetime.now().isoformat(), shipping_address))
-        
-        order_id = cursor.lastrowid
-        
-        # Agregar items del pedido
-        for item in items:
-            cursor.execute('''
-                INSERT INTO order_items (order_id, product_id, quantity, price)
-                VALUES (?, ?, ?, ?)
-            ''', (order_id, item['product_id'], item['quantity'], item['price']))
+        """Crea un nuevo pedido en la base de datos"""
+        try:
+            # Crear el pedido principal
+            query = """
+            INSERT INTO pedidos (usuario_id, total, estado, direccion_envio, fecha_pedido)
+            VALUES (%s, %s, 'pendiente', %s, NOW())
+            """
+            params = (user_id, total, shipping_address)
+            self.execute_query(query, params, commit=True)
             
-            # Actualizar stock
-            cursor.execute('''
-                UPDATE products SET stock = stock - ? WHERE id = ?
-            ''', (item['quantity'], item['product_id']))
-        
-        conn.commit()
-        conn.close()
-        return order_id
+            # Obtener el ID del pedido recién creado
+            order_id = self.execute_query("SELECT LAST_INSERT_ID() as id", fetch_one=True)['id']
+            
+            # Insertar los items del pedido
+            for item in items:
+                product = self.get_product_by_id(item['product_id'])
+                if product:
+                    query = """
+                    INSERT INTO detalle_pedido (pedido_id, producto_id, cantidad, precio_unitario, subtotal)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """
+                    params = (order_id, item['product_id'], item['quantity'], product.price, 
+                             product.price * item['quantity'])
+                    self.execute_query(query, params, commit=True)
+                    
+                    # Actualizar el stock del producto
+                    query = "UPDATE productos SET stock = stock - %s WHERE id = %s"
+                    self.execute_query(query, (item['quantity'], item['product_id']), commit=True)
+            
+            return order_id
+        except Error as e:
+            print(f"Error al crear pedido: {e}")
+            return None
 
     def get_user_orders(self, user_id: int) -> List[Dict]:
         """Obtiene los pedidos de un usuario"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT o.id, o.total, o.status, o.created_at, o.shipping_address,
-                   GROUP_CONCAT(p.name || ' x' || oi.quantity) as items
-            FROM orders o
-            LEFT JOIN order_items oi ON o.id = oi.order_id
-            LEFT JOIN products p ON oi.product_id = p.id
-            WHERE o.user_id = ?
-            GROUP BY o.id
-            ORDER BY o.created_at DESC
-        ''', (user_id,))
-        
-        results = cursor.fetchall()
-        conn.close()
+        query = """
+        SELECT p.id, p.total, p.estado as status, p.fecha_pedido as created_at, 
+               p.direccion_envio as shipping_address
+        FROM pedidos p
+        WHERE p.usuario_id = %s
+        ORDER BY p.fecha_pedido DESC
+        """
+        results = self.execute_query(query, (user_id,), fetch_all=True) or []
         
         orders = []
-        for result in results:
+        for row in results:
+            # Obtener items del pedido
+            items_query = """
+            SELECT pr.nombre, dp.cantidad 
+            FROM detalle_pedido dp
+            JOIN productos pr ON dp.producto_id = pr.id
+            WHERE dp.pedido_id = %s
+            """
+            items_result = self.execute_query(items_query, (row['id'],), fetch_all=True) or []
+            items_str = ", ".join([f"{item['nombre']} x{item['cantidad']}" for item in items_result])
+            
             orders.append({
-                'id': result[0],
-                'total': result[1],
-                'status': result[2],
-                'created_at': result[3],
-                'shipping_address': result[4],
-                'items': result[5] if result[5] else ""
+                'id': row['id'],
+                'total': float(row['total']),
+                'status': row['status'],
+                'created_at': str(row['created_at']),
+                'shipping_address': row['shipping_address'],
+                'items': items_str or "No hay detalles"
             })
         
         return orders
 
     def add_to_favorites(self, user_id: int, product_id: int) -> bool:
         """Agrega un producto a favoritos"""
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                INSERT INTO favorites (user_id, product_id, created_at)
-                VALUES (?, ?, ?)
-            ''', (user_id, product_id, datetime.now().isoformat()))
-            
-            conn.commit()
-            conn.close()
-            return True
-        except sqlite3.IntegrityError:
+        # Verificar si ya es favorito
+        query = "SELECT id FROM favoritos WHERE usuario_id = %s AND producto_id = %s"
+        result = self.execute_query(query, (user_id, product_id), fetch_one=True)
+        
+        if result:
             return False
+        
+        # Agregar a favoritos
+        query = "INSERT INTO favoritos (usuario_id, producto_id, fecha_agregado) VALUES (%s, %s, NOW())"
+        return bool(self.execute_query(query, (user_id, product_id), commit=True))
 
     def remove_from_favorites(self, user_id: int, product_id: int) -> bool:
         """Remueve un producto de favoritos"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            DELETE FROM favorites WHERE user_id = ? AND product_id = ?
-        ''', (user_id, product_id))
-        
-        success = cursor.rowcount > 0
-        conn.commit()
-        conn.close()
-        return success
+        query = "DELETE FROM favoritos WHERE usuario_id = %s AND producto_id = %s"
+        return bool(self.execute_query(query, (user_id, product_id), commit=True))
 
     def get_user_favorites(self, user_id: int) -> List[Product]:
         """Obtiene los productos favoritos de un usuario"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        query = """
+        SELECT p.id, p.nombre as name, p.precio as price, c.nombre as category, 
+               p.descripcion as description, p.stock, p.marca, p.tipo_mascota, p.edad_mascota
+        FROM favoritos f
+        JOIN productos p ON f.producto_id = p.id
+        JOIN categorias c ON p.categoria_id = c.id
+        WHERE f.usuario_id = %s
+        ORDER BY f.fecha_agregado DESC
+        """
+        results = self.execute_query(query, (user_id,), fetch_all=True) or []
         
-        cursor.execute('''
-            SELECT p.id, p.name, p.price, p.category, p.rating, p.description, p.stock, p.image_path, p.discount
-            FROM products p
-            INNER JOIN favorites f ON p.id = f.product_id
-            WHERE f.user_id = ?
-            ORDER BY f.created_at DESC
-        ''', (user_id,))
+        favorites = []
+        for row in results:
+            # Obtener rating promedio
+            rating_query = "SELECT AVG(rating) as avg_rating FROM reseñas WHERE producto_id = %s"
+            rating_result = self.execute_query(rating_query, (row['id'],), fetch_one=True)
+            avg_rating = rating_result['avg_rating'] if rating_result and rating_result['avg_rating'] else 4.0
+            
+            favorites.append(Product(
+                id=row['id'],
+                name=row['name'],
+                price=float(row['price']),
+                category=row['category'],
+                rating=float(avg_rating),
+                description=row['description'],
+                stock=row['stock'],
+                marca=row['marca'],
+                tipo_mascota=row['tipo_mascota'],
+                edad_mascota=row['edad_mascota']
+            ))
         
-        results = cursor.fetchall()
-        conn.close()
-        
-        return [Product(*result) for result in results]
+        return favorites
 
     def is_favorite(self, user_id: int, product_id: int) -> bool:
         """Verifica si un producto está en favoritos"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT 1 FROM favorites WHERE user_id = ? AND product_id = ?
-        ''', (user_id, product_id))
-        
-        result = cursor.fetchone()
-        conn.close()
-        return result is not None
+        query = "SELECT id FROM favoritos WHERE usuario_id = %s AND producto_id = %s"
+        result = self.execute_query(query, (user_id, product_id), fetch_one=True)
+        return bool(result)
+
+    def get_categories(self) -> List[str]:
+        """Obtiene todas las categorías disponibles"""
+        query = "SELECT nombre FROM categorias ORDER BY nombre"
+        results = self.execute_query(query, fetch_all=True) or []
+        return ["Todos"] + [row['nombre'] for row in results]
 
 class NotificationManager:
     def __init__(self, parent):
@@ -451,6 +489,7 @@ class ImprovedPetZoneApp:
         
         # Inicializar managers
         self.db = DatabaseManager()
+        self.db.init_sample_data()
         self.notifications = NotificationManager(root)
         
         # Usuario actual
@@ -477,7 +516,7 @@ class ImprovedPetZoneApp:
         self.cart_items = []
         
         # Categorías
-        self.categories = ["Todos", "Alimentos", "Juguetes", "Accesorios", "Hogar", "Higiene", "Alimentación"]
+        self.categories = self.db.get_categories()
         self.selected_category = "Todos"
         
         # Crear frames
@@ -879,7 +918,7 @@ class ImprovedPetZoneApp:
         icon_label.pack()
         
         # Campos de entrada mejorados
-        self.create_input_field(content, "Usuario:", self.username_var, "👤")
+        self.create_input_field(content, "Email:", self.new_email_var, "✉️")
         self.create_input_field(content, "Contraseña:", self.password_var, "🔒", show="•")
         
         # Checkbox recordar
@@ -985,31 +1024,31 @@ class ImprovedPetZoneApp:
 
     def do_login(self):
         """Maneja el login con validación mejorada"""
-        username = self.username_var.get().strip()
+        email = self.new_email_var.get().strip()
         password = self.password_var.get()
         
-        if not username or not password:
+        if not email or not password:
             self.notifications.show_notification(
-                "Por favor ingrese usuario y contraseña", "warning"
+                "Por favor ingrese email y contraseña", "warning"
             )
             return
         
         # Autenticar usuario
-        user = self.db.authenticate_user(username, password)
+        user = self.db.authenticate_user(email, password)
         
         if user:
             self.current_user = user
             self.notifications.show_notification(
-                f"¡Bienvenido, {user.username}!", "success"
+                f"¡Bienvenido, {user.nombre or user.username}!", "success"
             )
             self.show_frame_with_animation(self.home_frame)
             
             # Limpiar campos
-            self.username_var.set("")
+            self.new_email_var.set("")
             self.password_var.set("")
         else:
             self.notifications.show_notification(
-                "Usuario o contraseña incorrectos", "error"
+                "Email o contraseña incorrectos", "error"
             )
 
     def setup_register_screen(self):
@@ -1219,7 +1258,7 @@ class ImprovedPetZoneApp:
             self.terms_var.set(False)
         else:
             self.notifications.show_notification(
-                "El usuario o email ya existe", "error"
+                "El email ya existe", "error"
             )
 
     def setup_home_screen(self):
@@ -1682,7 +1721,7 @@ class ImprovedPetZoneApp:
         
         # Colores por categoría
         colors = {
-            "Alimentos": "#8B4513",
+            "Alimento Perros": "#8B4513",
             "Juguetes": "#FF69B4", 
             "Accesorios": "#4682B4",
             "Hogar": "#6B8E23",
@@ -1697,7 +1736,7 @@ class ImprovedPetZoneApp:
         
         # Añadir icono según categoría
         icons = {
-            "Alimentos": "🍖",
+            "Alimento Perros": "🍖",
             "Juguetes": "🎾",
             "Accesorios": "🦮",
             "Hogar": "🏠",
@@ -1856,6 +1895,30 @@ class ImprovedPetZoneApp:
             anchor="w"
         )
         category_label.pack(fill=tk.X, pady=2)
+        
+        # Marca
+        if product.marca:
+            marca_label = tk.Label(
+                parent,
+                text=f"Marca: {product.marca}",
+                font=self.label_font,
+                bg=self.bg_color,
+                fg=self.fg_color,
+                anchor="w"
+            )
+            marca_label.pack(fill=tk.X, pady=2)
+        
+        # Tipo y edad de mascota
+        if product.tipo_mascota:
+            tipo_label = tk.Label(
+                parent,
+                text=f"Para: {product.tipo_mascota} ({product.edad_mascota})",
+                font=self.label_font,
+                bg=self.bg_color,
+                fg=self.fg_color,
+                anchor="w"
+            )
+            tipo_label.pack(fill=tk.X, pady=2)
         
         # Rating
         stars_text = "★" * int(product.rating) + "☆" * (5 - int(product.rating))
@@ -2467,6 +2530,11 @@ class ImprovedPetZoneApp:
             self.notifications.show_notification("No hay productos en el carrito", "warning")
             return
         
+        if not self.current_user:
+            self.notifications.show_notification("Debe iniciar sesión para comprar", "warning")
+            self.show_frame_with_animation(self.login_frame)
+            return
+        
         # Calcular totales
         subtotal = sum(item['product'].price * item['quantity'] for item in self.cart_items)
         shipping = 1500 if subtotal < 30000 else 0
@@ -2584,6 +2652,10 @@ class ImprovedPetZoneApp:
         )
         address_entry.pack(fill=tk.X, pady=5)
         
+        # Pre-llenar con dirección del usuario si existe
+        if self.current_user.direccion:
+            address_entry.insert(tk.END, f"{self.current_user.direccion}, {self.current_user.ciudad or ''}")
+        
         # Método de pago
         payment_frame = tk.Frame(checkout_window, bg=self.bg_color)
         payment_frame.pack(fill=tk.X, padx=20, pady=10)
@@ -2649,37 +2721,36 @@ class ImprovedPetZoneApp:
             return
         
         try:
-            # Crear pedido en la base de datos si el usuario está logueado
-            if self.current_user:
-                order_items = []
-                for item in self.cart_items:
-                    order_items.append({
-                        'product_id': item['product'].id,
-                        'quantity': item['quantity'],
-                        'price': item['product'].price
-                    })
-                
-                order_id = self.db.create_order(
-                    self.current_user.id, order_items, total, address
-                )
-                
+            # Crear lista de items para la orden
+            items = [{'product_id': item['product'].id, 'quantity': item['quantity']} 
+                    for item in self.cart_items]
+            
+            # Crear la orden en la base de datos
+            order_id = self.db.create_order(
+                user_id=self.current_user.id,
+                items=items,
+                total=total,
+                shipping_address=address
+            )
+            
+            if order_id:
                 success_message = f"¡Compra realizada con éxito!\n\nNúmero de pedido: #{order_id}\nTotal: $ {total:,.0f} ARS\nMétodo de pago: {payment_method}\n\n¡Gracias por tu compra!"
+                
+                # Mostrar confirmación
+                messagebox.showinfo("Compra Exitosa", success_message)
+                
+                # Limpiar carrito
+                self.cart_items = []
+                self.cart_count_label.config(text="0")
+                self.update_cart_display()
+                
+                # Cerrar ventana y volver al inicio
+                window.destroy()
+                self.show_frame_with_animation(self.home_frame)
+                
+                self.notifications.show_notification("¡Compra realizada con éxito!", "success")
             else:
-                success_message = f"¡Compra realizada con éxito!\n\nTotal: $ {total:,.0f} ARS\nMétodo de pago: {payment_method}\n\n¡Gracias por tu compra!"
-            
-            # Mostrar confirmación
-            messagebox.showinfo("Compra Exitosa", success_message)
-            
-            # Limpiar carrito
-            self.cart_items = []
-            self.cart_count_label.config(text="0")
-            self.update_cart_display()
-            
-            # Cerrar ventana y volver al inicio
-            window.destroy()
-            self.show_frame_with_animation(self.home_frame)
-            
-            self.notifications.show_notification("¡Compra realizada con éxito!", "success")
+                messagebox.showerror("Error", "Error al procesar la compra")
             
         except Exception as e:
             messagebox.showerror("Error", f"Error al procesar la compra: {str(e)}")
@@ -2817,24 +2888,6 @@ class ImprovedPetZoneApp:
             )
             date_label.pack(pady=2)
             
-            # Badge premium
-            if self.current_user.is_premium:
-                premium_frame = tk.Frame(user_info_frame, bg=self.card_bg)
-                premium_frame.pack(pady=10)
-                
-                premium_label = tk.Label(
-                    premium_frame,
-                    text="⭐ USUARIO PREMIUM ⭐",
-                    font=self.button_font,
-                    bg="gold",
-                    fg="black",
-                    padx=15,
-                    pady=5,
-                    relief=tk.RAISED,
-                    borderwidth=2
-                )
-                premium_label.pack()
-            
             # Estadísticas del usuario
             stats_frame = tk.Frame(user_info_frame, bg=self.card_bg)
             stats_frame.pack(fill=tk.X, padx=20, pady=10)
@@ -2957,18 +3010,17 @@ class ImprovedPetZoneApp:
         ).pack(pady=10)
 
         # Crear opciones
-        if self.current_user:
-            options = [
+        if self.current_user: 
+              options = [
                 ("🔑", "Cambiar Contraseña", self.change_password),
                 ("📧", "Cambiar Email", self.change_email),
                 ("🏠", "Mis Direcciones", self.manage_addresses),
                 ("💳", "Métodos de Pago", self.manage_payment_methods),
                 ("🔔", "Notificaciones", self.notification_settings),
-                ("🌟", "Upgrade a Premium", self.upgrade_premium),
                 ("📊", "Estadísticas Detalladas", self.show_detailed_stats),
                 ("💾", "Exportar Mis Datos", self.export_data),
                 ("🗑️", "Eliminar Cuenta", self.delete_account)
-            ]
+              ]
         else:
             options = [
                 ("🔑", "Iniciar Sesión", lambda: self.show_frame_with_animation(self.login_frame)),
@@ -3299,19 +3351,19 @@ class ImprovedPetZoneApp:
         
         # Estado del pedido
         status_colors = {
-            'pending': '#FF9800',
-            'processing': '#2196F3',
-            'shipped': '#9C27B0',
-            'delivered': '#4CAF50',
-            'cancelled': '#F44336'
+            'pendiente': '#FF9800',
+            'procesando': '#2196F3',
+            'enviado': '#9C27B0',
+            'entregado': '#4CAF50',
+            'cancelado': '#F44336'
         }
         
         status_texts = {
-            'pending': 'Pendiente',
-            'processing': 'Procesando',
-            'shipped': 'Enviado',
-            'delivered': 'Entregado',
-            'cancelled': 'Cancelado'
+            'pendiente': 'Pendiente',
+            'procesando': 'Procesando',
+            'enviado': 'Enviado',
+            'entregado': 'Entregado',
+            'cancelado': 'Cancelado'
         }
         
         status_color = status_colors.get(order['status'], '#666666')
@@ -3401,17 +3453,42 @@ class ImprovedPetZoneApp:
         
         self.create_responsive_footer(self.settings_frame)
 
-    def toggle_mobile_mode(self):
-        """Alterna el modo móvil"""
-        self.is_mobile = not self.is_mobile
-        self.setup_responsive_fonts()
-        self.notifications.show_notification(
-            f"Modo {'móvil' if self.is_mobile else 'desktop'} activado", "info"
-        )
+    # Métodos de funcionalidad adicional
+    def change_password(self):
+        """Cambia la contraseña del usuario"""
+        if not self.current_user:
+            self.notifications.show_notification("Debe iniciar sesión", "warning")
+            return
+        
+        self.notifications.show_notification("Función de cambio de contraseña en desarrollo", "info")
 
-    def toggle_notifications(self):
-        """Alterna las notificaciones"""
+    def change_email(self):
+        """Cambia el email del usuario"""
+        if not self.current_user:
+            self.notifications.show_notification("Debe iniciar sesión", "warning")
+            return
+        
+        self.notifications.show_notification("Función de cambio de email en desarrollo", "info")
+
+    def manage_addresses(self):
+        """Gestiona las direcciones del usuario"""
+        self.notifications.show_notification("Función de direcciones en desarrollo", "info")
+
+    def manage_payment_methods(self):
+        """Gestiona los métodos de pago del usuario"""
+        self.notifications.show_notification("Función de métodos de pago en desarrollo", "info")
+
+    def notification_settings(self):
+        """Configuración de notificaciones"""
         self.notifications.show_notification("Configuración de notificaciones", "info")
+
+    def show_detailed_stats(self):
+        """Muestra estadísticas detalladas del usuario"""
+        if not self.current_user:
+            self.notifications.show_notification("Debe iniciar sesión", "warning")
+            return
+        
+        self.notifications.show_notification("Estadísticas detalladas en desarrollo", "info")
 
     def export_data(self):
         """Exporta los datos del usuario"""
@@ -3452,6 +3529,27 @@ class ImprovedPetZoneApp:
         except Exception as e:
             self.notifications.show_notification(f"Error al exportar: {str(e)}", "error")
 
+    def delete_account(self):
+        """Elimina la cuenta del usuario"""
+        if not self.current_user:
+            self.notifications.show_notification("Debe iniciar sesión", "warning")
+            return
+        
+        if messagebox.askyesno("Eliminar Cuenta", "¿Está seguro que desea eliminar su cuenta?\n\nEsta acción NO se puede deshacer."):
+            self.notifications.show_notification("Función de eliminación de cuenta en desarrollo", "warning")
+
+    def toggle_mobile_mode(self):
+        """Alterna el modo móvil"""
+        self.is_mobile = not self.is_mobile
+        self.setup_responsive_fonts()
+        self.notifications.show_notification(
+            f"Modo {'móvil' if self.is_mobile else 'desktop'} activado", "info"
+        )
+
+    def toggle_notifications(self):
+        """Alterna las notificaciones"""
+        self.notifications.show_notification("Configuración de notificaciones", "info")
+
     def clear_cache(self):
         """Limpia el cache de la aplicación"""
         self.notifications.show_notification("Cache limpiado", "success")
@@ -3462,6 +3560,7 @@ class ImprovedPetZoneApp:
         
 Versión: 2.0
 Desarrollado con Python y Tkinter
+Base de datos: MySQL
 
 Características:
 • Sistema de usuarios y autenticación
@@ -3477,1110 +3576,11 @@ Características:
         
         messagebox.showinfo("Acerca de PetZone", about_text)
 
-    def change_password(self):
-        """Cambia la contraseña del usuario"""
-        if not self.current_user:
-            self.notifications.show_notification("Debe iniciar sesión", "warning")
-            return
-        
-        # Ventana para cambiar contraseña
-        password_window = tk.Toplevel(self.root)
-        password_window.title("Cambiar Contraseña")
-        password_window.geometry("350x300")
-        password_window.configure(bg=self.bg_color)
-        password_window.transient(self.root)
-        password_window.grab_set()
-        
-        # Centrar ventana
-        password_window.geometry("+%d+%d" % (
-            self.root.winfo_rootx() + 50,
-            self.root.winfo_rooty() + 50
-        ))
-        
-        # Título
-        title_label = tk.Label(
-            password_window,
-            text="🔑 Cambiar Contraseña",
-            font=self.welcome_font,
-            bg=self.bg_color,
-            fg=self.fg_color
-        )
-        title_label.pack(pady=20)
-        
-        # Variables
-        current_password_var = tk.StringVar()
-        new_password_var = tk.StringVar()
-        confirm_password_var = tk.StringVar()
-        
-        # Campos
-        self.create_input_field(password_window, "Contraseña actual:", current_password_var, "🔒", show="•")
-        self.create_input_field(password_window, "Nueva contraseña:", new_password_var, "🔐", show="•")
-        self.create_input_field(password_window, "Confirmar nueva:", confirm_password_var, "🔐", show="•")
-        
-        # Botones
-        buttons_frame = tk.Frame(password_window, bg=self.bg_color)
-        buttons_frame.pack(pady=20)
-        
-        cancel_button = tk.Button(
-            buttons_frame,
-            text="Cancelar",
-            font=self.label_font,
-            bg=self.card_bg,
-            fg=self.fg_color,
-            command=password_window.destroy
-        )
-        cancel_button.pack(side=tk.LEFT, padx=10)
-        
-        def change_password_action():
-            current = current_password_var.get()
-            new = new_password_var.get()
-            confirm = confirm_password_var.get()
-            
-            if not all([current, new, confirm]):
-                self.notifications.show_notification("Complete todos los campos", "warning")
-                return
-            
-            if new != confirm:
-                self.notifications.show_notification("Las contraseñas no coinciden", "warning")
-                return
-            
-            if len(new) < 6:
-                self.notifications.show_notification("La nueva contraseña debe tener al menos 6 caracteres", "warning")
-                return
-            
-            # Verificar contraseña actual
-            if self.db.hash_password(current) != self.current_user.password_hash:
-                self.notifications.show_notification("Contraseña actual incorrecta", "error")
-                return
-            
-            # Cambiar contraseña en la base de datos
-            try:
-                conn = sqlite3.connect(self.db.db_path)
-                cursor = conn.cursor()
-                
-                new_hash = self.db.hash_password(new)
-                cursor.execute(
-                    "UPDATE users SET password_hash = ? WHERE id = ?",
-                    (new_hash, self.current_user.id)
-                )
-                
-                conn.commit()
-                conn.close()
-                
-                self.notifications.show_notification("Contraseña cambiada correctamente", "success")
-                password_window.destroy()
-                
-            except Exception as e:
-                self.notifications.show_notification(f"Error al cambiar contraseña: {str(e)}", "error")
-        
-        change_button = tk.Button(
-            buttons_frame,
-            text="Cambiar",
-            font=self.button_font,
-            bg=self.button_color,
-            fg=self.button_text_color,
-            command=change_password_action
-        )
-        change_button.pack(side=tk.RIGHT, padx=10)
-
-    def manage_addresses(self):
-        """Gestiona las direcciones del usuario"""
-        self.notifications.show_notification("Función de direcciones en desarrollo", "info")
-
-    def manage_payment_methods(self):
-        """Gestiona los métodos de pago del usuario"""
-        self.notifications.show_notification("Función de métodos de pago en desarrollo", "info")
-
-def change_email(self):
-    """Cambia el email del usuario"""
-    if not self.current_user:
-        self.notifications.show_notification("Debe iniciar sesión", "warning")
-        return
-    
-    # Ventana para cambiar email
-    email_window = tk.Toplevel(self.root)
-    email_window.title("Cambiar Email")
-    email_window.geometry("350x250")
-    email_window.configure(bg=self.bg_color)
-    email_window.transient(self.root)
-    email_window.grab_set()
-    
-    # Centrar ventana
-    email_window.geometry("+%d+%d" % (
-        self.root.winfo_rootx() + 50,
-        self.root.winfo_rooty() + 50
-    ))
-    
-    # Título
-    title_label = tk.Label(
-        email_window,
-        text="📧 Cambiar Email",
-        font=self.welcome_font,
-        bg=self.bg_color,
-        fg=self.fg_color
-    )
-    title_label.pack(pady=20)
-    
-    # Email actual
-    current_email_label = tk.Label(
-        email_window,
-        text=f"Email actual: {self.current_user.email}",
-        font=self.label_font,
-        bg=self.bg_color,
-        fg=self.fg_color
-    )
-    current_email_label.pack(pady=10)
-    
-    # Nuevo email
-    new_email_var = tk.StringVar()
-    self.create_input_field(email_window, "Nuevo email:", new_email_var, "📧")
-    
-    # Botones
-    buttons_frame = tk.Frame(email_window, bg=self.bg_color)
-    buttons_frame.pack(pady=20)
-    
-    cancel_button = tk.Button(
-        buttons_frame,
-        text="Cancelar",
-        font=self.label_font,
-        bg=self.card_bg,
-        fg=self.fg_color,
-        command=email_window.destroy
-    )
-    cancel_button.pack(side=tk.LEFT, padx=10)
-    
-    def change_email_action():
-        new_email = new_email_var.get().strip()
-        
-        if not new_email:
-            self.notifications.show_notification("Ingrese el nuevo email", "warning")
-            return
-        
-        if "@" not in new_email or "." not in new_email:
-            self.notifications.show_notification("Email inválido", "warning")
-            return
-        
-        if new_email == self.current_user.email:
-            self.notifications.show_notification("El email es el mismo", "warning")
-            return
-        
-        try:
-            conn = sqlite3.connect(self.db.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute(
-                "UPDATE users SET email = ? WHERE id = ?",
-                (new_email, self.current_user.id)
-            )
-            
-            conn.commit()
-            conn.close()
-            
-            # Actualizar usuario actual
-            self.current_user.email = new_email
-            
-            self.notifications.show_notification("Email cambiado correctamente", "success")
-            email_window.destroy()
-            
-        except sqlite3.IntegrityError:
-            self.notifications.show_notification("El email ya está en uso", "error")
-        except Exception as e:
-            self.notifications.show_notification(f"Error: {str(e)}", "error")
-    
-    change_button = tk.Button(
-        buttons_frame,
-        text="Cambiar",
-        font=self.button_font,
-        bg=self.button_color,
-        fg=self.button_text_color,
-        command=change_email_action
-    )
-    change_button.pack(side=tk.RIGHT, padx=10)
-
-def notification_settings(self):
-    """Configuración de notificaciones"""
-    settings_window = tk.Toplevel(self.root)
-    settings_window.title("Configuración de Notificaciones")
-    settings_window.geometry("400x300")
-    settings_window.configure(bg=self.bg_color)
-    settings_window.transient(self.root)
-    settings_window.grab_set()
-    
-    # Centrar ventana
-    settings_window.geometry("+%d+%d" % (
-        self.root.winfo_rootx() + 50,
-        self.root.winfo_rooty() + 50
-    ))
-    
-    tk.Label(
-        settings_window,
-        text="🔔 Configuración de Notificaciones",
-        font=self.welcome_font,
-        bg=self.bg_color,
-        fg=self.fg_color
-    ).pack(pady=20)
-    
-    # Opciones de notificaciones
-    notifications_frame = tk.Frame(settings_window, bg=self.bg_color)
-    notifications_frame.pack(fill=tk.X, padx=20, pady=20)
-    
-    notification_options = [
-        "Notificaciones de pedidos",
-        "Ofertas y promociones",
-        "Nuevos productos",
-        "Recordatorios de carrito",
-        "Notificaciones por email"
-    ]
-    
-    notification_vars = {}
-    for option in notification_options:
-        var = tk.BooleanVar(value=True)
-        notification_vars[option] = var
-        
-        check = tk.Checkbutton(
-            notifications_frame,
-            text=option,
-            variable=var,
-            font=self.label_font,
-            bg=self.bg_color,
-            fg=self.fg_color,
-            selectcolor=self.card_bg
-        )
-        check.pack(anchor="w", pady=5)
-    
-    # Botón guardar
-    save_button = tk.Button(
-        settings_window,
-        text="💾 Guardar Configuración",
-        font=self.button_font,
-        bg=self.button_color,
-        fg=self.button_text_color,
-        command=lambda: [
-            self.notifications.show_notification("Configuración guardada", "success"),
-            settings_window.destroy()
-        ]
-    )
-    save_button.pack(pady=20)
-
-def upgrade_premium(self):
-    """Upgrade a cuenta premium"""
-    if not self.current_user:
-        self.notifications.show_notification("Debe iniciar sesión", "warning")
-        return
-    
-    if self.current_user.is_premium:
-        self.notifications.show_notification("Ya eres usuario Premium", "info")
-        return
-    
-    premium_window = tk.Toplevel(self.root)
-    premium_window.title("Upgrade a Premium")
-    premium_window.geometry("450x400")
-    premium_window.configure(bg=self.bg_color)
-    premium_window.transient(self.root)
-    premium_window.grab_set()
-    
-    # Centrar ventana
-    premium_window.geometry("+%d+%d" % (
-        self.root.winfo_rootx() + 50,
-        self.root.winfo_rooty() + 50
-    ))
-    
-    # Título
-    title_label = tk.Label(
-        premium_window,
-        text="⭐ UPGRADE A PREMIUM ⭐",
-        font=self.title_font,
-        bg="gold",
-        fg="black",
-        padx=20,
-        pady=10
-    )
-    title_label.pack(fill=tk.X, pady=10)
-    
-    # Beneficios
-    benefits_frame = tk.Frame(premium_window, bg=self.card_bg, bd=2, relief=tk.SOLID)
-    benefits_frame.pack(fill=tk.X, padx=20, pady=10)
-    
-    tk.Label(
-        benefits_frame,
-        text="🎁 Beneficios Premium",
-        font=self.button_font,
-        bg=self.card_bg,
-        fg=self.fg_color
-    ).pack(pady=10)
-    
-    benefits = [
-        "✅ Envío gratis en todos los pedidos",
-        "✅ Descuentos exclusivos hasta 25%",
-        "✅ Acceso anticipado a nuevos productos",
-        "✅ Soporte prioritario 24/7",
-        "✅ Puntos de recompensa dobles",
-        "✅ Devoluciones extendidas (60 días)"
-    ]
-    
-    for benefit in benefits:
-        tk.Label(
-            benefits_frame,
-            text=benefit,
-            font=self.label_font,
-            bg=self.card_bg,
-            fg=self.fg_color,
-            anchor="w"
-        ).pack(fill=tk.X, padx=20, pady=2)
-    
-    # Precio
-    price_frame = tk.Frame(premium_window, bg=self.bg_color)
-    price_frame.pack(pady=20)
-    
-    tk.Label(
-        price_frame,
-        text="💰 Solo $2,990 ARS/mes",
-        font=self.title_font,
-        bg=self.bg_color,
-        fg=self.accent_color
-    ).pack()
-    
-    tk.Label(
-        price_frame,
-        text="¡Cancela cuando quieras!",
-        font=self.copyright_font,
-        bg=self.bg_color,
-        fg=self.fg_color
-    ).pack()
-    
-    # Botones
-    buttons_frame = tk.Frame(premium_window, bg=self.bg_color)
-    buttons_frame.pack(pady=20)
-    
-    cancel_button = tk.Button(
-        buttons_frame,
-        text="Tal vez después",
-        font=self.label_font,
-        bg=self.card_bg,
-        fg=self.fg_color,
-        command=premium_window.destroy
-    )
-    cancel_button.pack(side=tk.LEFT, padx=10)
-    
-    def upgrade_action():
-        try:
-            conn = sqlite3.connect(self.db.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute(
-                "UPDATE users SET is_premium = 1 WHERE id = ?",
-                (self.current_user.id,)
-            )
-            
-            conn.commit()
-            conn.close()
-            
-            self.current_user.is_premium = True
-            
-            self.notifications.show_notification("¡Bienvenido a Premium! 🌟", "success")
-            premium_window.destroy()
-            
-            # Refrescar perfil
-            self.show_frame_with_animation(self.profile_frame)
-            
-        except Exception as e:
-            self.notifications.show_notification(f"Error: {str(e)}", "error")
-    
-    upgrade_button = tk.Button(
-        buttons_frame,
-        text="🌟 ¡Quiero ser Premium!",
-        font=self.button_font,
-        bg="gold",
-        fg="black",
-        command=upgrade_action
-    )
-    upgrade_button.pack(side=tk.RIGHT, padx=10)
-
-def show_detailed_stats(self):
-    """Muestra estadísticas detalladas del usuario"""
-    if not self.current_user:
-        self.notifications.show_notification("Debe iniciar sesión", "warning")
-        return
-    
-    stats_window = tk.Toplevel(self.root)
-    stats_window.title("Estadísticas Detalladas")
-    stats_window.geometry("500x600")
-    stats_window.configure(bg=self.bg_color)
-    stats_window.transient(self.root)
-    stats_window.grab_set()
-    
-    # Centrar ventana
-    stats_window.geometry("+%d+%d" % (
-        self.root.winfo_rootx() + 50,
-        self.root.winfo_rooty() + 50
-    ))
-    
-    # Título
-    tk.Label(
-        stats_window,
-        text="📊 Mis Estadísticas",
-        font=self.title_font,
-        bg=self.bg_color,
-        fg=self.fg_color
-    ).pack(pady=20)
-    
-    # Contenido con scroll
-    canvas = tk.Canvas(stats_window, bg=self.bg_color, highlightthickness=0)
-    scrollbar = ttk.Scrollbar(stats_window, orient="vertical", command=canvas.yview)
-    scrollable_frame = tk.Frame(canvas, bg=self.bg_color)
-    
-    scrollable_frame.bind(
-        "<Configure>",
-        lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-    )
-    
-    canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-    canvas.configure(yscrollcommand=scrollbar.set)
-    
-    canvas.pack(side="left", fill="both", expand=True, padx=20, pady=20)
-    scrollbar.pack(side="right", fill="y")
-    
-    # Obtener datos
-    orders = self.db.get_user_orders(self.current_user.id)
-    favorites = self.db.get_user_favorites(self.current_user.id)
-    
-    # Estadísticas generales
-    general_frame = tk.Frame(scrollable_frame, bg=self.card_bg, bd=2, relief=tk.SOLID)
-    general_frame.pack(fill=tk.X, pady=10)
-    
-    tk.Label(
-        general_frame,
-        text="📈 Estadísticas Generales",
-        font=self.button_font,
-        bg=self.card_bg,
-        fg=self.fg_color
-    ).pack(pady=10)
-    
-    total_spent = sum(order['total'] for order in orders)
-    avg_order = total_spent / len(orders) if orders else 0
-    
-    stats_data = [
-        ("Total de pedidos", len(orders)),
-        ("Productos favoritos", len(favorites)),
-        ("Total gastado", f"${total_spent:,.0f} ARS"),
-        ("Promedio por pedido", f"${avg_order:,.0f} ARS"),
-        ("Estado de cuenta", "Premium" if self.current_user.is_premium else "Estándar")
-    ]
-    
-    for label, value in stats_data:
-        stat_frame = tk.Frame(general_frame, bg=self.card_bg)
-        stat_frame.pack(fill=tk.X, padx=20, pady=5)
-        
-        tk.Label(
-            stat_frame,
-            text=f"{label}:",
-            font=self.label_font,
-            bg=self.card_bg,
-            fg=self.fg_color
-        ).pack(side=tk.LEFT)
-        
-        tk.Label(
-            stat_frame,
-            text=str(value),
-            font=self.label_font,
-            bg=self.card_bg,
-            fg=self.accent_color
-        ).pack(side=tk.RIGHT)
-    
-    # Historial de pedidos recientes
-    if orders:
-        recent_frame = tk.Frame(scrollable_frame, bg=self.card_bg, bd=2, relief=tk.SOLID)
-        recent_frame.pack(fill=tk.X, pady=10)
-        
-        tk.Label(
-            recent_frame,
-            text="🕒 Pedidos Recientes",
-            font=self.button_font,
-            bg=self.card_bg,
-            fg=self.fg_color
-        ).pack(pady=10)
-        
-        for order in orders[:5]:  # Mostrar últimos 5 pedidos
-            order_frame = tk.Frame(recent_frame, bg=self.card_bg)
-            order_frame.pack(fill=tk.X, padx=20, pady=5)
-            
-            tk.Label(
-                order_frame,
-                text=f"Pedido #{order['id']} - {order['created_at'][:10]}",
-                font=self.copyright_font,
-                bg=self.card_bg,
-                fg=self.fg_color
-            ).pack(side=tk.LEFT)
-            
-            tk.Label(
-                order_frame,
-                text=f"${order['total']:,.0f}",
-                font=self.copyright_font,
-                bg=self.card_bg,
-                fg=self.accent_color
-            ).pack(side=tk.RIGHT)
-    
-    # Categorías favoritas
-    if favorites:
-        categories_frame = tk.Frame(scrollable_frame, bg=self.card_bg, bd=2, relief=tk.SOLID)
-        categories_frame.pack(fill=tk.X, pady=10)
-        
-        tk.Label(
-            categories_frame,
-            text="❤️ Categorías Favoritas",
-            font=self.button_font,
-            bg=self.card_bg,
-            fg=self.fg_color
-        ).pack(pady=10)
-        
-        # Contar categorías
-        category_counts = {}
-        for fav in favorites:
-            cat = fav.category
-            category_counts[cat] = category_counts.get(cat, 0) + 1
-        
-        for category, count in sorted(category_counts.items(), key=lambda x: x[1], reverse=True):
-            cat_frame = tk.Frame(categories_frame, bg=self.card_bg)
-            cat_frame.pack(fill=tk.X, padx=20, pady=2)
-            
-            tk.Label(
-                cat_frame,
-                text=category,
-                font=self.label_font,
-                bg=self.card_bg,
-                fg=self.fg_color
-            ).pack(side=tk.LEFT)
-            
-            tk.Label(
-                cat_frame,
-                text=f"{count} productos",
-                font=self.copyright_font,
-                bg=self.card_bg,
-                fg=self.accent_color
-            ).pack(side=tk.RIGHT)
-
-def delete_account(self):
-    """Elimina la cuenta del usuario"""
-    if not self.current_user:
-        self.notifications.show_notification("Debe iniciar sesión", "warning")
-        return
-    
-    # Confirmación múltiple
-    if not messagebox.askyesno(
-        "Eliminar Cuenta", 
-        "¿Está seguro que desea eliminar su cuenta?\n\nEsta acción NO se puede deshacer."
-    ):
-        return
-    
-    if not messagebox.askyesno(
-        "Confirmación Final", 
-        f"¿Realmente desea eliminar la cuenta '{self.current_user.username}'?\n\nSe perderán todos sus datos, pedidos y favoritos."
-    ):
-        return
-    
-    try:
-        conn = sqlite3.connect(self.db.db_path)
-        cursor = conn.cursor()
-        
-        # Eliminar todos los datos relacionados con el usuario
-        cursor.execute("DELETE FROM favorites WHERE user_id = ?", (self.current_user.id,))
-        cursor.execute("DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE user_id = ?)", (self.current_user.id,))
-        cursor.execute("DELETE FROM orders WHERE user_id = ?", (self.current_user.id,))
-        cursor.execute("DELETE FROM users WHERE id = ?", (self.current_user.id,))
-        
-        conn.commit()
-        conn.close()
-        
-        self.notifications.show_notification(
-            "Cuenta eliminada exitosamente. ¡Lamentamos verte ir!", 
-            "success"
-        )
-        
-        # Limpiar datos y volver a la pantalla de inicio
-        self.current_user = None
-        self.cart_items = []
-        self.cart_count_label.config(text="0")
-        self.show_frame_with_animation(self.welcome_frame)
-        
-    except Exception as e:
-        self.notifications.show_notification(
-            f"Error al eliminar cuenta: {str(e)}", 
-            "error"
-        )
-
-def change_email(self):
-    """Cambia el email del usuario"""
-    if not self.current_user:
-        self.notifications.show_notification("Debe iniciar sesión", "warning")
-        return
-    
-    # Ventana para cambiar email
-    email_window = tk.Toplevel(self.root)
-    email_window.title("Cambiar Email")
-    email_window.geometry("350x250")
-    email_window.configure(bg=self.bg_color)
-    email_window.transient(self.root)
-    email_window.grab_set()
-    
-    # Centrar ventana
-    email_window.geometry("+%d+%d" % (
-        self.root.winfo_rootx() + 50,
-        self.root.winfo_rooty() + 50
-    ))
-    
-    # Título
-    title_label = tk.Label(
-        email_window,
-        text="📧 Cambiar Email",
-        font=self.welcome_font,
-        bg=self.bg_color,
-        fg=self.fg_color
-    )
-    title_label.pack(pady=20)
-    
-    # Email actual
-    current_email_label = tk.Label(
-        email_window,
-        text=f"Email actual: {self.current_user.email}",
-        font=self.label_font,
-        bg=self.bg_color,
-        fg=self.fg_color
-    )
-    current_email_label.pack(pady=10)
-    
-    # Nuevo email
-    new_email_var = tk.StringVar()
-    self.create_input_field(email_window, "Nuevo email:", new_email_var, "📧")
-    
-    # Botones
-    buttons_frame = tk.Frame(email_window, bg=self.bg_color)
-    buttons_frame.pack(pady=20)
-    
-    cancel_button = tk.Button(
-        buttons_frame,
-        text="Cancelar",
-        font=self.label_font,
-        bg=self.card_bg,
-        fg=self.fg_color,
-        command=email_window.destroy
-    )
-    cancel_button.pack(side=tk.LEFT, padx=10)
-    
-    def change_email_action():
-        new_email = new_email_var.get().strip()
-        
-        if not new_email:
-            self.notifications.show_notification("Ingrese el nuevo email", "warning")
-            return
-        
-        if "@" not in new_email or "." not in new_email:
-            self.notifications.show_notification("Email inválido", "warning")
-            return
-        
-        if new_email == self.current_user.email:
-            self.notifications.show_notification("El email es el mismo", "warning")
-            return
-        
-        try:
-            conn = sqlite3.connect(self.db.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute(
-                "UPDATE users SET email = ? WHERE id = ?",
-                (new_email, self.current_user.id)
-            )
-            
-            conn.commit()
-            conn.close()
-            
-            # Actualizar usuario actual
-            self.current_user.email = new_email
-            
-            self.notifications.show_notification("Email cambiado correctamente", "success")
-            email_window.destroy()
-            
-        except sqlite3.IntegrityError:
-            self.notifications.show_notification("El email ya está en uso", "error")
-        except Exception as e:
-            self.notifications.show_notification(f"Error: {str(e)}", "error")
-    
-    change_button = tk.Button(
-        buttons_frame,
-        text="Cambiar",
-        font=self.button_font,
-        bg=self.button_color,
-        fg=self.button_text_color,
-        command=change_email_action
-    )
-    change_button.pack(side=tk.RIGHT, padx=10)
-
-def notification_settings(self):
-    """Configuración de notificaciones"""
-    settings_window = tk.Toplevel(self.root)
-    settings_window.title("Configuración de Notificaciones")
-    settings_window.geometry("400x300")
-    settings_window.configure(bg=self.bg_color)
-    settings_window.transient(self.root)
-    settings_window.grab_set()
-    
-    # Centrar ventana
-    settings_window.geometry("+%d+%d" % (
-        self.root.winfo_rootx() + 50,
-        self.root.winfo_rooty() + 50
-    ))
-    
-    tk.Label(
-        settings_window,
-        text="🔔 Configuración de Notificaciones",
-        font=self.welcome_font,
-        bg=self.bg_color,
-        fg=self.fg_color
-    ).pack(pady=20)
-    
-    # Opciones de notificaciones
-    notifications_frame = tk.Frame(settings_window, bg=self.bg_color)
-    notifications_frame.pack(fill=tk.X, padx=20, pady=20)
-    
-    notification_options = [
-        "Notificaciones de pedidos",
-        "Ofertas y promociones",
-        "Nuevos productos",
-        "Recordatorios de carrito",
-        "Notificaciones por email"
-    ]
-    
-    notification_vars = {}
-    for option in notification_options:
-        var = tk.BooleanVar(value=True)
-        notification_vars[option] = var
-        
-        check = tk.Checkbutton(
-            notifications_frame,
-            text=option,
-            variable=var,
-            font=self.label_font,
-            bg=self.bg_color,
-            fg=self.fg_color,
-            selectcolor=self.card_bg
-        )
-        check.pack(anchor="w", pady=5)
-    
-    # Botón guardar
-    save_button = tk.Button(
-        settings_window,
-        text="💾 Guardar Configuración",
-        font=self.button_font,
-        bg=self.button_color,
-        fg=self.button_text_color,
-        command=lambda: [
-            self.notifications.show_notification("Configuración guardada", "success"),
-            settings_window.destroy()
-        ]
-    )
-    save_button.pack(pady=20)
-
-def upgrade_premium(self):
-    """Upgrade a cuenta premium"""
-    if not self.current_user:
-        self.notifications.show_notification("Debe iniciar sesión", "warning")
-        return
-    
-    if self.current_user.is_premium:
-        self.notifications.show_notification("Ya eres usuario Premium", "info")
-        return
-    
-    premium_window = tk.Toplevel(self.root)
-    premium_window.title("Upgrade a Premium")
-    premium_window.geometry("450x400")
-    premium_window.configure(bg=self.bg_color)
-    premium_window.transient(self.root)
-    premium_window.grab_set()
-    
-    # Centrar ventana
-    premium_window.geometry("+%d+%d" % (
-        self.root.winfo_rootx() + 50,
-        self.root.winfo_rooty() + 50
-    ))
-    
-    # Título
-    title_label = tk.Label(
-        premium_window,
-        text="⭐ UPGRADE A PREMIUM ⭐",
-        font=self.title_font,
-        bg="gold",
-        fg="black",
-        padx=20,
-        pady=10
-    )
-    title_label.pack(fill=tk.X, pady=10)
-    
-    # Beneficios
-    benefits_frame = tk.Frame(premium_window, bg=self.card_bg, bd=2, relief=tk.SOLID)
-    benefits_frame.pack(fill=tk.X, padx=20, pady=10)
-    
-    tk.Label(
-        benefits_frame,
-        text="🎁 Beneficios Premium",
-        font=self.button_font,
-        bg=self.card_bg,
-        fg=self.fg_color
-    ).pack(pady=10)
-    
-    benefits = [
-        "✅ Envío gratis en todos los pedidos",
-        "✅ Descuentos exclusivos hasta 25%",
-        "✅ Acceso anticipado a nuevos productos",
-        "✅ Soporte prioritario 24/7",
-        "✅ Puntos de recompensa dobles",
-        "✅ Devoluciones extendidas (60 días)"
-    ]
-    
-    for benefit in benefits:
-        tk.Label(
-            benefits_frame,
-            text=benefit,
-            font=self.label_font,
-            bg=self.card_bg,
-            fg=self.fg_color,
-            anchor="w"
-        ).pack(fill=tk.X, padx=20, pady=2)
-    
-    # Precio
-    price_frame = tk.Frame(premium_window, bg=self.bg_color)
-    price_frame.pack(pady=20)
-    
-    tk.Label(
-        price_frame,
-        text="💰 Solo $2,990 ARS/mes",
-        font=self.title_font,
-        bg=self.bg_color,
-        fg=self.accent_color
-    ).pack()
-    
-    tk.Label(
-        price_frame,
-        text="¡Cancela cuando quieras!",
-        font=self.copyright_font,
-        bg=self.bg_color,
-        fg=self.fg_color
-    ).pack()
-    
-    # Botones
-    buttons_frame = tk.Frame(premium_window, bg=self.bg_color)
-    buttons_frame.pack(pady=20)
-    
-    cancel_button = tk.Button(
-        buttons_frame,
-        text="Tal vez después",
-        font=self.label_font,
-        bg=self.card_bg,
-        fg=self.fg_color,
-        command=premium_window.destroy
-    )
-    cancel_button.pack(side=tk.LEFT, padx=10)
-    
-    def upgrade_action():
-        try:
-            conn = sqlite3.connect(self.db.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute(
-                "UPDATE users SET is_premium = 1 WHERE id = ?",
-                (self.current_user.id,)
-            )
-            
-            conn.commit()
-            conn.close()
-            
-            self.current_user.is_premium = True
-            
-            self.notifications.show_notification("¡Bienvenido a Premium! 🌟", "success")
-            premium_window.destroy()
-            
-            # Refrescar perfil
-            self.show_frame_with_animation(self.profile_frame)
-            
-        except Exception as e:
-            self.notifications.show_notification(f"Error: {str(e)}", "error")
-    
-    upgrade_button = tk.Button(
-        buttons_frame,
-        text="🌟 ¡Quiero ser Premium!",
-        font=self.button_font,
-        bg="gold",
-        fg="black",
-        command=upgrade_action
-    )
-    upgrade_button.pack(side=tk.RIGHT, padx=10)
-
-def show_detailed_stats(self):
-    """Muestra estadísticas detalladas del usuario"""
-    if not self.current_user:
-        self.notifications.show_notification("Debe iniciar sesión", "warning")
-        return
-    
-    stats_window = tk.Toplevel(self.root)
-    stats_window.title("Estadísticas Detalladas")
-    stats_window.geometry("500x600")
-    stats_window.configure(bg=self.bg_color)
-    stats_window.transient(self.root)
-    stats_window.grab_set()
-    
-    # Centrar ventana
-    stats_window.geometry("+%d+%d" % (
-        self.root.winfo_rootx() + 50,
-        self.root.winfo_rooty() + 50
-    ))
-    
-    # Título
-    tk.Label(
-        stats_window,
-        text="📊 Mis Estadísticas",
-        font=self.title_font,
-        bg=self.bg_color,
-        fg=self.fg_color
-    ).pack(pady=20)
-    
-    # Contenido con scroll
-    canvas = tk.Canvas(stats_window, bg=self.bg_color, highlightthickness=0)
-    scrollbar = ttk.Scrollbar(stats_window, orient="vertical", command=canvas.yview)
-    scrollable_frame = tk.Frame(canvas, bg=self.bg_color)
-    
-    scrollable_frame.bind(
-        "<Configure>",
-        lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-    )
-    canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-    canvas.configure(yscrollcommand=scrollbar.set)
-    
-    canvas.pack(side="left", fill="both", expand=True, padx=20, pady=20)
-    scrollbar.pack(side="right", fill="y")
-    
-    # Obtener datos
-    orders = self.db.get_user_orders(self.current_user.id)
-    favorites = self.db.get_user_favorites(self.current_user.id)
-    
-    # Estadísticas generales
-    general_frame = tk.Frame(scrollable_frame, bg=self.card_bg, bd=2, relief=tk.SOLID)
-    general_frame.pack(fill=tk.X, pady=10)
-    
-    tk.Label(
-        general_frame,
-        text="📈 Estadísticas Generales",
-        font=self.button_font,
-        bg=self.card_bg,
-        fg=self.fg_color
-    ).pack(pady=10)
-    
-    total_spent = sum(order['total'] for order in orders)
-    avg_order = total_spent / len(orders) if orders else 0
-    
-    stats_data = [
-        ("Total de pedidos", len(orders)),
-        ("Productos favoritos", len(favorites)),
-        ("Total gastado", f"${total_spent:,.0f} ARS"),
-        ("Promedio por pedido", f"${avg_order:,.0f} ARS"),
-        ("Estado de cuenta", "Premium" if self.current_user.is_premium else "Estándar")
-    ]
-    
-    for label, value in stats_data:
-        stat_frame = tk.Frame(general_frame, bg=self.card_bg)
-        stat_frame.pack(fill=tk.X, padx=20, pady=5)
-        
-        tk.Label(
-            stat_frame,
-            text=f"{label}:",
-            font=self.label_font,
-            bg=self.card_bg,
-            fg=self.fg_color
-        ).pack(side=tk.LEFT)
-        
-        tk.Label(
-            stat_frame,
-            text=str(value),
-            font=self.label_font,
-            bg=self.card_bg,
-            fg=self.accent_color
-        ).pack(side=tk.RIGHT)
-    
-    # Historial de pedidos recientes
-    if orders:
-        recent_frame = tk.Frame(scrollable_frame, bg=self.card_bg, bd=2, relief=tk.SOLID)
-        recent_frame.pack(fill=tk.X, pady=10)
-        
-        tk.Label(
-            recent_frame,
-            text="🕒 Pedidos Recientes",
-            font=self.button_font,
-            bg=self.card_bg,
-            fg=self.fg_color
-        ).pack(pady=10)
-        
-        for order in orders[:5]:  # Mostrar últimos 5 pedidos
-            order_frame = tk.Frame(recent_frame, bg=self.card_bg)
-            order_frame.pack(fill=tk.X, padx=20, pady=5)
-            
-            tk.Label(
-                order_frame,
-                text=f"Pedido #{order['id']} - {order['created_at'][:10]}",
-                font=self.copyright_font,
-                bg=self.card_bg,
-                fg=self.fg_color
-            ).pack(side=tk.LEFT)
-            
-            tk.Label(
-                order_frame,
-                text=f"${order['total']:,.0f}",
-                font=self.copyright_font,
-                bg=self.card_bg,
-                fg=self.accent_color
-            ).pack(side=tk.RIGHT)
-    
-    # Categorías favoritas
-    if favorites:
-        categories_frame = tk.Frame(scrollable_frame, bg=self.card_bg, bd=2, relief=tk.SOLID)
-        categories_frame.pack(fill=tk.X, pady=10)
-        
-        tk.Label(
-            categories_frame,
-            text="❤️ Categorías Favoritas",
-            font=self.button_font,
-            bg=self.card_bg,
-            fg=self.fg_color
-        ).pack(pady=10)
-        
-        # Contar categorías
-        category_counts = {}
-        for fav in favorites:
-            cat = fav.category
-            category_counts[cat] = category_counts.get(cat, 0) + 1
-        
-        for category, count in sorted(category_counts.items(), key=lambda x: x[1], reverse=True):
-            cat_frame = tk.Frame(categories_frame, bg=self.card_bg)
-            cat_frame.pack(fill=tk.X, padx=20, pady=2)
-            
-            tk.Label(
-                cat_frame,
-                text=category,
-                font=self.label_font,
-                bg=self.card_bg,
-                fg=self.fg_color
-            ).pack(side=tk.LEFT)
-            
-            tk.Label(
-                cat_frame,
-                text=f"{count} productos",
-                font=self.copyright_font,
-                bg=self.card_bg,
-                fg=self.accent_color
-            ).pack(side=tk.RIGHT)
-
-def run(self):
-    """Inicia la aplicación"""
-    self.root.mainloop()
-
-if __name__ == "__main__":
+def main():
+    """Función principal para ejecutar la aplicación"""
     root = tk.Tk()
     app = ImprovedPetZoneApp(root)
     root.mainloop()
 
+if __name__ == "__main__":
+    main()
