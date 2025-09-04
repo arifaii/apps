@@ -1,0 +1,67 @@
+[
+  {
+    "id": 1,
+    "name": "Remera Básica Negra",
+    "category": "Remeras",
+    "price": 9800,
+    "description": "Remera básica de algodón 100%, cómoda y versátil para uso diario.",
+    "sizes": [
+      "S",
+      "M",
+      "L",
+      "XL"
+    ],
+    "color": "Negro",
+    "image_color": "#2c3e50",
+    "favorite": false,
+    "rating": 4.5,
+    "stock": 15,
+    "seller": "admin",
+    "seller_name": "Tienda Oficial",
+    "condition": "Nuevo",
+    "location": "Buenos Aires"
+  },
+  {
+    "id": 2,
+    "name": "Jean Skinny Azul",
+    "category": "Pantalones",
+    "price": 24990,
+    "description": "Jean de corte skinny, denim de alta calidad con elastano.",
+    "sizes": [
+      "38",
+      "40",
+      "42",
+      "44"
+    ],
+    "color": "Azul",
+    "image_color": "#3498db",
+    "favorite": false,
+    "rating": 4.7,
+    "stock": 8,
+    "seller": "admin",
+    "seller_name": "Tienda Oficial",
+    "condition": "Nuevo",
+    "location": "Córdoba"
+  },
+  {
+    "id": 3,
+    "name": "Vestido Floral Vintage",
+    "category": "Vestidos",
+    "price": 18500,
+    "description": "Vestido vintage con estampado floral, perfecto para ocasiones especiales.",
+    "sizes": [
+      "S",
+      "M",
+      "L"
+    ],
+    "color": "Rosa",
+    "image_color": "#f8c291",
+    "favorite": false,
+    "rating": 4.8,
+    "stock": 3,
+    "seller": "admin",
+    "seller_name": "Tienda Oficial",
+    "condition": "Usado - Excelente",
+    "location": "Rosario"
+  }
+]
